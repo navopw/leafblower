@@ -1,0 +1,6 @@
+.omc/
+.playwright-mcp/
+web/node_modules/
+internal/web/dist
+leafblower
+PLAN.md
