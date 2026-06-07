@@ -1,6 +1,10 @@
-.omc/
-.playwright-mcp/
-web/node_modules/
-internal/web/dist
-leafblower
-PLAN.md
+.DS_Store
+*.xcodeproj
+*.xcworkspace
+.build
+*.swp
+*.swo
+*~
+
+# Build artifact produced by build-app.sh
+/Leafblower.app/

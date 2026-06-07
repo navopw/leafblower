@@ -2,6 +2,12 @@ import Foundation
 import Darwin
 import os
 
+/// Identifies a file uniquely across volumes, for hardlink deduplication.
+private struct DeviceInode: Hashable {
+    let device: Int64
+    let inode: UInt64
+}
+
 struct FileWalker {
     let includeHidden: Bool
     let onProgress: @Sendable (ProgressEvent) async -> Void
@@ -30,7 +36,7 @@ struct FileWalker {
         let itemCount = OSAllocatedUnfairLock(initialState: Int64(0))
         let dirQueued = OSAllocatedUnfairLock(initialState: Int64(0))
         let dirDone = OSAllocatedUnfairLock(initialState: Int64(0))
-        let seenInodes = OSAllocatedUnfairLock(initialState: Set<UInt64>())
+        let seenInodes = OSAllocatedUnfairLock(initialState: Set<DeviceInode>())
         let idCounter = OSAllocatedUnfairLock(initialState: 0)
         let lastEmit = OSAllocatedUnfairLock(initialState: Int64(0))
 
@@ -46,17 +52,13 @@ struct FileWalker {
 
         func emitProgress(currentPath: String) async {
             await onProgress(ProgressEvent(
-                type: "progress",
                 scanID: scanID,
-                phase: "walking",
                 currentPath: currentPath,
                 directoriesVisited: dirCount.withLock { $0 },
                 filesVisited: fileCount.withLock { $0 },
                 bytesSeen: byteCount.withLock { $0 },
                 dirsQueued: dirQueued.withLock { $0 },
-                dirsDone: dirDone.withLock { $0 },
-                warningCount: warnings.withLock { $0.count },
-                rootNodeID: nil
+                dirsDone: dirDone.withLock { $0 }
             ))
         }
 
@@ -121,10 +123,13 @@ struct FileWalker {
                     if stat(fullPath, &statbuf) == 0 {
                         let diskSize = Int64(statbuf.st_blocks) * 512
                         if statbuf.st_nlink > 1 {
-                            let inode = UInt64(statbuf.st_ino)
+                            // Key on (device, inode): inode numbers are only unique
+                            // within a volume, so scans crossing mount points must not
+                            // dedup files that merely share an inode number.
+                            let key = DeviceInode(device: Int64(statbuf.st_dev), inode: UInt64(statbuf.st_ino))
                             let alreadySeen = seenInodes.withLock { set -> Bool in
-                                if set.contains(inode) { return true }
-                                set.insert(inode)
+                                if set.contains(key) { return true }
+                                set.insert(key)
                                 return false
                             }
                             if !alreadySeen {

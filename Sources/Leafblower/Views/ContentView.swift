@@ -23,11 +23,19 @@ struct ContentView: View {
             StatusBarView()
         }
         .toolbar {
-            ToolbarItem {
+            ToolbarItemGroup {
+                Button {
+                    ScanManager.shared.rescan()
+                } label: {
+                    Label("Rescan", systemImage: "arrow.clockwise")
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                .disabled(ScanManager.shared.currentJob == nil)
+
                 Button("Clear") {
                     ScanManager.shared.clearSelection()
                 }
-                .keyboardShortcut("l", modifiers: [.command])
+                .keyboardShortcut(.escape, modifiers: [])
                 .disabled(ScanManager.shared.selectedNodeIDs.isEmpty)
             }
         }

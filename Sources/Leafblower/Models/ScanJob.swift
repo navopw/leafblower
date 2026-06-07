@@ -15,6 +15,9 @@ class ScanJob: @unchecked Sendable {
     var warnings: [ScanWarning]
     var rootNode: Node?
     var nodeIndex: [String: Node]
+    /// Bumped whenever the tree is mutated in place (e.g. after a delete) so views
+    /// keyed on it re-render.
+    var treeRevision: Int = 0
     let createdAt: Date
 
     init(
