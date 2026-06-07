@@ -6,4 +6,6 @@ struct TreemapTile: Identifiable {
     let name: String
     let rect: CGRect
     let color: Color
+    let isDir: Bool
+    let sizeBytes: Int64
 }

@@ -4,23 +4,33 @@ struct BreadcrumbView: View {
     var body: some View {
         if let job = ScanManager.shared.currentJob {
             let components = buildBreadcrumb(job: job)
-            HStack(spacing: 4) {
-                ForEach(components.indices, id: \.self) { i in
-                    let component = components[i]
-                    Button(component.name) {
-                        ScanManager.shared.currentZoomNodeID = component.id
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundColor(.accentColor)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 2)
 
-                    if i < components.count - 1 {
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    ForEach(components.indices, id: \.self) { i in
+                        let component = components[i]
+                        let isLast = i == components.count - 1
+
+                        Button(component.name) {
+                            ScanManager.shared.zoomInto(nodeID: component.id)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(isLast ? Color.primary : Color.accentColor)
+                        .fontWeight(isLast ? .semibold : .regular)
+                        .disabled(isLast)
+
+                        if !isLast {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
         }
     }
 

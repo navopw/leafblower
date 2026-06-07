@@ -19,7 +19,7 @@ class ScanManager {
     func startScan(rootPath: String, includeHidden: Bool) {
         counter += 1
         let id = "scan_\(counter)"
-        let expanded = PathUtils.cleanPath(PathUtils.expandPath(rootPath))
+        let expanded = PathUtils.canonicalPath(rootPath)
 
         let job = ScanJob(
             id: id,
@@ -112,22 +112,28 @@ class ScanManager {
         currentZoomNodeID = nodeID
     }
 
-    func zoomOut() {
-        guard let job = currentJob else { return }
-        if let current = job.nodeIndex[currentZoomNodeID], let parentID = current.parentID {
-            currentZoomNodeID = parentID
+    func deleteSelected() async {
+        guard let job = currentJob, !selectedNodeIDs.isEmpty else { return }
+        guard let service = try? DeleteService() else { return }
+
+        // `execute` deletes from disk and prunes the deleted nodes (and their sizes)
+        // from the in-memory tree, so the map updates without a rescan.
+        let response = service.execute(job: job, nodeIDs: Array(selectedNodeIDs))
+
+        // Keep only nodes that failed to delete still selected, so the user sees them.
+        selectedNodeIDs = Set(response.failed.map(\.nodeID)).intersection(selectedNodeIDs)
+
+        // If we were zoomed inside something that just got deleted, fall back to root.
+        if job.nodeIndex[currentZoomNodeID] == nil {
+            currentZoomNodeID = job.rootNode?.id ?? "root"
         }
+        job.treeRevision += 1
     }
 
-    func deleteSelected() async {
+    /// Re-runs the current scan against the same path.
+    func rescan() {
         guard let job = currentJob else { return }
-        do {
-            let service = try DeleteService()
-            let _ = service.execute(job: job, nodeIDs: Array(selectedNodeIDs))
-            selectedNodeIDs.removeAll()
-        } catch {
-            // Handle init error silently or surface to UI later
-        }
+        startScan(rootPath: job.rootPath, includeHidden: job.includeHidden)
     }
 
     // MARK: - Private

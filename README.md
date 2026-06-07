@@ -31,20 +31,24 @@ Open the app, enter a path, and click **Scan**.
 
 1. Enter a path in the top bar (e.g. `~/Downloads`) and click **Scan**
 2. Watch the treemap fill in when the scan completes
-3. Click a tile to select it; Shift+click a folder to zoom in
-4. The sidebar shows your selection and total size
-5. Click **Delete** and confirm
+3. Click tiles to select them — selections add up and persist as you navigate
+4. Double-click (or Shift+click) a folder to drill in; click a folder's header to select the whole folder
+5. The sidebar lists your selection (relative paths) and the total size to reclaim
+6. Click **Delete** and confirm
+
+Each folder shows its immediate contents one level deep, the same way the
+visualization is served in the reference implementation.
 
 **Shortcuts**
 
 | Shortcut | Action |
 |----------|--------|
-| Click | Toggle select/deselect |
-| Shift+click (folder) | Drill down into folder |
-| Click breadcrumb | Navigate back up to that level |
+| Click | Toggle select / deselect |
+| Double-click or Shift+click | Drill into a folder |
+| Click a folder header | Select the whole folder |
+| Click breadcrumb | Jump back to that level |
 | `Esc` | Clear selection |
-| `Backspace` | Navigate up one level |
-| `Enter` (in path input) | Start scan |
+| `Enter` (in path field) | Start scan |
 | `⌘R` | Rescan current path |
 
 ## Architecture
@@ -53,17 +57,18 @@ Leafblower is a single native macOS application written in Swift 6 and SwiftUI.
 
 ```
 SwiftUI (Swift 6 native UI)
-  ├── TreemapView       — Canvas-based squarified treemap
-  ├── PathBarView       — Native path input + NSOpenPanel browse
-  └── SelectionPanel    — Sidebar with live totals
+  ├── TreemapView       — squarified treemap drawn to a cached CoreGraphics
+  │                       bitmap, with a Canvas overlay for labels & selection
+  ├── PathBarView       — native path input + NSOpenPanel browse
+  └── SelectionPanel    — sidebar with relative paths and live totals
 ScanManager             — @Observable @MainActor state machine
   ├── FileWalker        — TaskGroup concurrent traversal
-  │   └── Darwin.stat   — block-based size & inode deduplication
-  └── DeleteService     — Scan-bound, home-directory-restricted deletion
-      └── SafetyValidator — path guards identical to original Go impl
+  │   └── Darwin.stat   — block-based size & (device, inode) deduplication
+  └── DeleteService     — scan-bound, home-directory-restricted deletion
+      └── SafetyValidator — scan-root & critical-path guards
 ```
 
-**Stack:** Swift 6 · SwiftUI · macOS 14+
+**Stack:** Swift 6 · SwiftUI · macOS 14+ (no third-party dependencies)
 
 ## Safety
 
