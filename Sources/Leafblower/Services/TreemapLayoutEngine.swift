@@ -66,7 +66,7 @@ struct TreemapLayoutEngine {
     func compute(node: Node, in bounds: CGRect) -> TreemapLayout {
         var result = TreemapLayout()
         let area = bounds.insetBy(dx: outerPadding, dy: outerPadding)
-        guard area.width > 0, area.height > 0 else { return result }
+        guard area.width > 0, area.height > 0, !Task.isCancelled else { return result }
         squarify(directChildren(of: node), rect: area, hue: 0 ... 1, depth: 0, into: &result)
         return result
     }
@@ -95,7 +95,7 @@ struct TreemapLayoutEngine {
 
         var remaining = rect
         var i = 0
-        while i < items.count {
+        while i < items.count && !Task.isCancelled {
             let side = Double(min(remaining.width, remaining.height))
             if side <= 0 { break }
 
@@ -146,6 +146,7 @@ struct TreemapLayoutEngine {
         var cursor = horizontal ? remaining.minX : remaining.minY
 
         for k in 0 ..< count {
+            if k.isMultiple(of: 256), Task.isCancelled { return }
             let idx = start + k
             let node = items[idx]
             let extent = CGFloat(Double(node.sizeBytes) * areaPerByte / Double(strip))

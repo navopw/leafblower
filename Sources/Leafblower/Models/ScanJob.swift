@@ -1,7 +1,7 @@
 import Foundation
 
 @Observable @MainActor
-class ScanJob: @unchecked Sendable {
+final class ScanJob {
     let id: String
     let rootPath: String
     let includeHidden: Bool
@@ -15,8 +15,7 @@ class ScanJob: @unchecked Sendable {
     var warnings: [ScanWarning]
     var rootNode: Node?
     var nodeIndex: [String: Node]
-    /// Bumped whenever the tree is mutated in place (e.g. after a delete) so views
-    /// keyed on it re-render.
+    /// Bumped whenever the published tree is replaced so keyed views re-render.
     var treeRevision: Int = 0
     let createdAt: Date
 

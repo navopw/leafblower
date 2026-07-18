@@ -12,14 +12,57 @@ enum PathUtils {
     }
 
     static func cleanPath(_ path: String) -> String {
-        return (path as NSString).standardizingPath
+        let expanded = expandPath(path)
+        if (expanded as NSString).isAbsolutePath {
+            return (expanded as NSString).standardizingPath
+        }
+
+        return ((FileManager.default.currentDirectoryPath as NSString)
+            .appendingPathComponent(expanded) as NSString).standardizingPath
     }
 
     /// Expands `~`, standardizes, and resolves symlinks so the path is canonical
     /// (e.g. `/tmp` → `/private/tmp`). Used for the scan root so the breadcrumb,
     /// child paths, and safety checks all reference the real location.
+    ///
+    /// Walks components so intermediate directory symlinks still resolve when the
+    /// final path component does not exist yet.
     static func canonicalPath(_ path: String) -> String {
-        return (expandPath(path) as NSString).resolvingSymlinksInPath
+        let clean = cleanPath(path)
+        guard clean != "/" else { return clean }
+
+        var resolved = "/"
+        let components = (clean as NSString).pathComponents.filter { $0 != "/" }
+        for (index, component) in components.enumerated() {
+            let candidate = (resolved as NSString).appendingPathComponent(component)
+            let isLast = index == components.count - 1
+            if isLast {
+                // Preserve a final missing leaf, but still resolve when it exists.
+                if FileManager.default.fileExists(atPath: candidate) {
+                    resolved = (candidate as NSString).resolvingSymlinksInPath
+                } else {
+                    resolved = candidate
+                }
+            } else {
+                resolved = (candidate as NSString).resolvingSymlinksInPath
+            }
+        }
+        return resolved
+    }
+
+    /// Resolves every path component except the final one. Moving a symbolic link
+    /// affects the link itself, not its destination, but its parent must still be
+    /// inside the permitted directory.
+    static func canonicalPathPreservingLastComponent(_ path: String) -> String {
+        let clean = cleanPath(path)
+        guard clean != "/" else { return clean }
+        let name = (clean as NSString).lastPathComponent
+        let parent = (clean as NSString).deletingLastPathComponent
+        return (canonicalPath(parent) as NSString).appendingPathComponent(name)
+    }
+
+    static func isSameOrDescendant(_ path: String, of root: String) -> Bool {
+        path == root || (root == "/" ? path.hasPrefix("/") : path.hasPrefix(root + "/"))
     }
 
     /// Path of `path` relative to the scan `root` (e.g. "Personal/p0-mail"). The

@@ -6,5 +6,5 @@
 *.swo
 *~
 
-# Build artifact produced by build-app.sh
+# Build artifact produced by build.sh
 /Leafblower.app/

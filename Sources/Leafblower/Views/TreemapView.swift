@@ -1,26 +1,30 @@
 import SwiftUI
 
 struct TreemapView: View {
+    @Environment(ScanManager.self) private var scanManager
+    @Environment(\.displayScale) private var displayScale
     @State private var rendered: RenderedTreemap?
+    @State private var selectionBeforeClick: Set<String>?
 
     var body: some View {
         GeometryReader { geometry in
-            let job = ScanManager.shared.currentJob
+            let job = scanManager.currentJob
 
             if let job, let root = job.rootNode {
-                let zoomID = ScanManager.shared.currentZoomNodeID
+                let zoomID = scanManager.currentZoomNodeID
                 let zoomNode = job.nodeIndex[zoomID] ?? root
                 let size = geometry.size
+                let renderScale = displayScale
                 // Bucket the size so small resize deltas don't trigger a re-render.
                 let bw = (size.width / 4).rounded() * 4
                 let bh = (size.height / 4).rounded() * 4
-                let key = "\(job.id)|\(zoomID)|\(Int(bw))x\(Int(bh))|\(job.treeRevision)"
-                let scale = NSScreen.main?.backingScaleFactor ?? 2
+                let scaleKey = Int((renderScale * 100).rounded())
+                let key = "\(job.id)|\(zoomID)|\(Int(bw))x\(Int(bh))|\(scaleKey)|\(job.treeRevision)"
 
                 ZStack(alignment: .bottomLeading) {
                     Color(.windowBackgroundColor)
 
-                    if let rendered, rendered.image.size.width > 0 {
+                    if let rendered, rendered.key == key, rendered.image.size.width > 0 {
                         Image(nsImage: rendered.image)
                             .resizable()
                             .interpolation(.low)
@@ -29,36 +33,55 @@ struct TreemapView: View {
                         overlay(rendered: rendered, displaySize: size)
                     }
 
-                    if rendered == nil || rendered?.key != key {
+                    if rendered?.key != key {
                         ProgressView()
                             .controlSize(.small)
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
 
-                    ClickCatcher { location, clickCount, shift in
-                        handleClick(location, clickCount: clickCount, shift: shift,
-                                    displaySize: size, job: job)
+                    if rendered?.key == key && !scanManager.isDeleting {
+                        ClickCatcher { location, clickCount, shift in
+                            handleClick(location, clickCount: clickCount, shift: shift,
+                                        displaySize: size, job: job)
+                        }
                     }
                 }
                 .task(id: key) {
+                    do {
+                        try await Task.sleep(for: .milliseconds(75))
+                    } catch {
+                        return
+                    }
+
                     let node = zoomNode
+                    let scale = renderScale
                     let renderSize = CGSize(width: max(bw, 4), height: max(bh, 4))
-                    let result = await Task.detached(priority: .userInitiated) {
-                        TreemapRenderer.render(node: node, size: renderSize, scale: scale, key: key)
-                    }.value
-                    if !Task.isCancelled {
+                    let renderTask = Task.detached(priority: .userInitiated) {
+                        TreemapRenderer.render(
+                            node: node,
+                            size: renderSize,
+                            scale: scale,
+                            key: key
+                        )
+                    }
+                    let result = await withTaskCancellationHandler(operation: {
+                        await renderTask.value
+                    }, onCancel: {
+                        renderTask.cancel()
+                    })
+                    if !Task.isCancelled, let result, result.key == key {
                         rendered = result
                     }
                 }
-            } else if let job, job.status == .running || job.status == .queued {
+            } else if let job, (job.status == .running || job.status == .queued || job.status == .cancelling) {
                 placeholder {
                     ProgressView()
                         .scaleEffect(1.4)
-                    Text("Scanning…")
+                    Text(job.status == .cancelling ? "Stopping..." : "Scanning...")
                         .font(.title3)
                         .foregroundStyle(.secondary)
-                    Text("Building the tree — progress is shown below.")
+                    Text("Building the tree - progress is shown below.")
                         .font(.callout)
                         .foregroundStyle(.tertiary)
                 }
@@ -70,6 +93,17 @@ struct TreemapView: View {
                     Text("Scan failed")
                         .font(.title3)
                     Text(job.warnings.first?.code ?? "Unknown error")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    }
+            } else if let job, job.status == .cancelled {
+                placeholder {
+                    Image(systemName: "stop.circle")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    Text("Scan cancelled")
+                        .font(.title3)
+                    Text("Choose Scan when you are ready to try again.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -84,6 +118,10 @@ struct TreemapView: View {
                 }
             }
         }
+        .onChange(of: scanManager.currentJob?.id) {
+            rendered = nil
+            selectionBeforeClick = nil
+        }
     }
 
     // MARK: - Live overlay (labels + selection)
@@ -92,7 +130,7 @@ struct TreemapView: View {
     /// for large tiles and the current selection, so it can repaint freely without
     /// touching the (expensive) tile rendering.
     private func overlay(rendered: RenderedTreemap, displaySize: CGSize) -> some View {
-        let selected = ScanManager.shared.selectedNodeIDs
+        let selected = scanManager.selectedNodeIDs
         let sx = rendered.size.width > 0 ? displaySize.width / rendered.size.width : 1
         let sy = rendered.size.height > 0 ? displaySize.height / rendered.size.height : 1
 
@@ -111,8 +149,11 @@ struct TreemapView: View {
                 let size = Text(FileSizeFormatter.string(from: tile.sizeBytes))
                     .font(.system(size: 9, weight: .regular))
                     .foregroundColor(.white.opacity(0.75))
-                context.draw(name, at: CGPoint(x: r.midX, y: r.midY - 6), anchor: .center)
-                context.draw(size, at: CGPoint(x: r.midX, y: r.midY + 7), anchor: .center)
+                context.drawLayer { labelContext in
+                    labelContext.clip(to: Path(r.insetBy(dx: 4, dy: 2)))
+                    labelContext.draw(name, at: CGPoint(x: r.midX, y: r.midY - 6), anchor: .center)
+                    labelContext.draw(size, at: CGPoint(x: r.midX, y: r.midY + 7), anchor: .center)
+                }
             }
 
             // Folder header: name on the left, size on the right.
@@ -122,7 +163,17 @@ struct TreemapView: View {
                 let name = Text(folder.name)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.white)
-                context.draw(name, at: CGPoint(x: h.minX + 7, y: h.midY), anchor: .leading)
+                let reservedSizeWidth: CGFloat = h.width > 110 ? 78 : 0
+                let nameRect = CGRect(
+                    x: h.minX + 5,
+                    y: h.minY,
+                    width: max(0, h.width - reservedSizeWidth - 10),
+                    height: h.height
+                )
+                context.drawLayer { labelContext in
+                    labelContext.clip(to: Path(nameRect))
+                    labelContext.draw(name, at: CGPoint(x: h.minX + 7, y: h.midY), anchor: .leading)
+                }
 
                 if h.width > 110 {
                     let size = Text(FileSizeFormatter.string(from: folder.sizeBytes))
@@ -157,12 +208,17 @@ struct TreemapView: View {
               let node = hitNode(p, job: job) else { return }
 
         if clickCount >= 2 {
-            if !shift { ScanManager.shared.toggleSelection(nodeID: node.id) } // undo first-click toggle
+            if !shift, let selectionBeforeClick {
+                scanManager.restoreSelection(selectionBeforeClick)
+            }
+            selectionBeforeClick = nil
             drill(node: node, job: job)
         } else if shift {
+            selectionBeforeClick = nil
             drill(node: node, job: job)
         } else {
-            ScanManager.shared.toggleSelection(nodeID: node.id)
+            selectionBeforeClick = scanManager.selectedNodeIDs
+            scanManager.toggleSelection(nodeID: node.id)
         }
     }
 
@@ -181,11 +237,11 @@ struct TreemapView: View {
     /// shown inside a subfolder group, drills into that subfolder. Top-level files
     /// are ignored.
     private func drill(node: Node, job: ScanJob) {
-        let zoomID = ScanManager.shared.currentZoomNodeID
+        let zoomID = scanManager.currentZoomNodeID
         if node.isDir, node.children?.isEmpty == false {
-            ScanManager.shared.zoomInto(nodeID: node.id)
+            scanManager.zoomInto(nodeID: node.id)
         } else if let parentID = node.parentID, parentID != zoomID {
-            ScanManager.shared.zoomInto(nodeID: parentID)
+            scanManager.zoomInto(nodeID: parentID)
         }
     }
 

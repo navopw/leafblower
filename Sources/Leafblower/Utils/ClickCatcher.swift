@@ -25,10 +25,22 @@ struct ClickCatcher: NSViewRepresentable {
 
         override var isFlipped: Bool { true }
 
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            addCursorRect(bounds, cursor: .pointingHand)
+        }
+
         override func mouseUp(with event: NSEvent) {
             let p = convert(event.locationInWindow, from: nil)
             guard bounds.contains(p) else { return }
             onClick?(p, event.clickCount, event.modifierFlags.contains(.shift))
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            setAccessibilityRole(.group)
+            setAccessibilityLabel("Disk usage map")
+            setAccessibilityHelp("Click to select an item. Double-click a folder to open it.")
         }
     }
 }

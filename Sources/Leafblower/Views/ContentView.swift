@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(ScanManager.self) private var scanManager
+
     var body: some View {
         VStack(spacing: 0) {
             HSplitView {
@@ -25,18 +27,18 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
-                    ScanManager.shared.rescan()
+                    scanManager.rescan()
                 } label: {
                     Label("Rescan", systemImage: "arrow.clockwise")
                 }
                 .keyboardShortcut("r", modifiers: [.command])
-                .disabled(ScanManager.shared.currentJob == nil)
+                .disabled(!scanManager.canRescan)
 
                 Button("Clear") {
-                    ScanManager.shared.clearSelection()
+                    scanManager.clearSelection()
                 }
                 .keyboardShortcut(.escape, modifiers: [])
-                .disabled(ScanManager.shared.selectedNodeIDs.isEmpty)
+                .disabled(scanManager.selectedNodeIDs.isEmpty || scanManager.isDeleting)
             }
         }
     }

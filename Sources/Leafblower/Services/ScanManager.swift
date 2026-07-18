@@ -1,31 +1,56 @@
 import Foundation
 
-@Observable @MainActor
-class ScanManager {
-    static let shared = ScanManager()
+private struct DeleteOperationOutcome: Sendable {
+    let response: DeleteResponse
+    let rebuiltTree: RebuiltTree?
+}
 
+@Observable @MainActor
+final class ScanManager {
     private(set) var jobs: [ScanJob] = []
     private var activeTasks: [String: Task<Void, Never>] = [:]
-    private let maxScans = 3
+    private let maxScans = 1
     private var counter = 0
 
     var selectedNodeIDs: Set<String> = []
-    var currentZoomNodeID: String = "root"
+    var currentZoomNodeID = "root"
+    private(set) var isDeleting = false
 
     var currentJob: ScanJob? { jobs.last }
 
-    private init() {}
+    var isScanning: Bool {
+        let status = currentJob?.status
+        return status == .queued || status == .running || status == .cancelling
+    }
+
+    var canStartScan: Bool { !isScanning && !isDeleting }
+    var canRescan: Bool { currentJob != nil && canStartScan }
+
+    var selectedNodes: [Node] {
+        guard let job = currentJob else { return [] }
+        return selectedNodeIDs
+            .compactMap { job.nodeIndex[$0] }
+            .sorted { lhs, rhs in
+                if lhs.sizeBytes == rhs.sizeBytes { return lhs.path < rhs.path }
+                return lhs.sizeBytes > rhs.sizeBytes
+            }
+    }
 
     func startScan(rootPath: String, includeHidden: Bool) {
+        guard canStartScan else { return }
+
         counter += 1
         let id = "scan_\(counter)"
         let expanded = PathUtils.canonicalPath(rootPath)
+
+        selectedNodeIDs.removeAll()
+        currentZoomNodeID = "root"
 
         let job = ScanJob(
             id: id,
             rootPath: expanded,
             includeHidden: includeHidden,
-            status: .queued,
+            status: .running,
             directoriesVisited: 0,
             filesVisited: 0,
             bytesSeen: 0,
@@ -42,50 +67,41 @@ class ScanManager {
             activeTasks.removeValue(forKey: oldest.id)
         }
 
-        job.status = .running
-
         let scanID = id
         let path = expanded
-
-        let task = Task.detached { [scanID, path, includeHidden] in
-            let walker = FileWalker(includeHidden: includeHidden) { event in
-                await MainActor.run {
-                    ScanManager.shared.applyProgress(scanID: scanID, event: event)
-                }
+        let task = Task.detached(priority: .userInitiated) { [weak self] in
+            let walker = FileWalker(includeHidden: includeHidden) { [weak self] event in
+                await self?.applyProgress(scanID: scanID, event: event)
             }
 
             do {
-                let (root, index, warnings) = try await walker.walk(scanID: scanID, rootPath: path)
-                await MainActor.run {
-                    ScanManager.shared.finalizeScan(
-                        id: scanID,
-                        root: root,
-                        index: index,
-                        warnings: warnings,
-                        status: .complete
-                    )
-                }
+                let (root, index, warnings) = try await walker.walk(
+                    scanID: scanID,
+                    rootPath: path
+                )
+                await self?.finalizeScan(
+                    id: scanID,
+                    root: root,
+                    index: index,
+                    warnings: warnings,
+                    status: .complete
+                )
             } catch is CancellationError {
-                await MainActor.run {
-                    ScanManager.shared.finalizeScan(
-                        id: scanID,
-                        root: nil,
-                        index: nil,
-                        warnings: nil,
-                        status: .cancelled
-                    )
-                }
+                await self?.finalizeScan(
+                    id: scanID,
+                    root: nil,
+                    index: nil,
+                    warnings: nil,
+                    status: .cancelled
+                )
             } catch {
-                let description = error.localizedDescription
-                await MainActor.run {
-                    ScanManager.shared.finalizeScan(
-                        id: scanID,
-                        root: nil,
-                        index: nil,
-                        warnings: [ScanWarning(path: path, code: description)],
-                        status: .failed
-                    )
-                }
+                await self?.finalizeScan(
+                    id: scanID,
+                    root: nil,
+                    index: nil,
+                    warnings: [ScanWarning(path: path, code: error.localizedDescription)],
+                    status: .failed
+                )
             }
         }
 
@@ -93,53 +109,110 @@ class ScanManager {
     }
 
     func cancelScan(id: String) {
+        if let job = jobs.first(where: { $0.id == id }), job.status == .running {
+            job.status = .cancelling
+        }
         activeTasks[id]?.cancel()
     }
 
     func toggleSelection(nodeID: String) {
-        if selectedNodeIDs.contains(nodeID) {
-            selectedNodeIDs.remove(nodeID)
-        } else {
-            selectedNodeIDs.insert(nodeID)
+        guard !isDeleting,
+              let job = currentJob,
+              job.status == .complete,
+              let node = job.nodeIndex[nodeID],
+              node.id != job.rootNode?.id else { return }
+
+        if selectedNodeIDs.remove(nodeID) != nil { return }
+
+        // Keep the selection non-overlapping. Selecting a child replaces its
+        // selected ancestor, while selecting a folder replaces selected children.
+        selectedNodeIDs = selectedNodeIDs.filter { selectedID in
+            guard let selected = job.nodeIndex[selectedID] else { return false }
+            let selectedContainsNode = PathUtils.isSameOrDescendant(node.path, of: selected.path)
+            let nodeContainsSelected = PathUtils.isSameOrDescendant(selected.path, of: node.path)
+            return !selectedContainsNode && !nodeContainsSelected
         }
+        selectedNodeIDs.insert(nodeID)
     }
 
     func clearSelection() {
+        guard !isDeleting else { return }
         selectedNodeIDs.removeAll()
     }
 
+    func restoreSelection(_ nodeIDs: Set<String>) {
+        guard !isDeleting, let job = currentJob else { return }
+        selectedNodeIDs = nodeIDs.intersection(job.nodeIndex.keys)
+    }
+
     func zoomInto(nodeID: String) {
+        guard !isDeleting,
+              let node = currentJob?.nodeIndex[nodeID],
+              node.isDir else { return }
         currentZoomNodeID = nodeID
     }
 
-    func deleteSelected() async {
-        guard let job = currentJob, !selectedNodeIDs.isEmpty else { return }
-        guard let service = try? DeleteService() else { return }
+    @discardableResult
+    func deleteSelected() async -> DeleteResponse {
+        guard let job = currentJob,
+              job.status == .complete,
+              !selectedNodeIDs.isEmpty,
+              !isDeleting else {
+            return DeleteResponse(deleted: [], failed: [])
+        }
 
-        // `execute` deletes from disk and prunes the deleted nodes (and their sizes)
-        // from the in-memory tree, so the map updates without a rescan.
-        let response = service.execute(job: job, nodeIDs: Array(selectedNodeIDs))
+        isDeleting = true
+        defer { isDeleting = false }
 
-        // Keep only nodes that failed to delete still selected, so the user sees them.
-        selectedNodeIDs = Set(response.failed.map(\.nodeID)).intersection(selectedNodeIDs)
+        let selectedIDs = Array(selectedNodeIDs)
+        let service = DeleteService()
+        let requests = selectedIDs.map {
+            DeleteRequest(nodeID: $0, node: job.nodeIndex[$0])
+        }
+        let scanRoot = job.rootPath
+        let scanRootIdentity = job.rootNode?.fileIdentity
+        let root = job.rootNode
 
-        // If we were zoomed inside something that just got deleted, fall back to root.
+        let outcome = await Task.detached(priority: .userInitiated) {
+            let plan = service.makePlan(
+                scanRoot: scanRoot,
+                scanRootIdentity: scanRootIdentity,
+                scanIsComplete: true,
+                requests: requests
+            )
+            let response = service.perform(plan)
+            let removedIDs = Set(response.deleted.map(\.nodeID))
+            let rebuilt = root.flatMap {
+                service.rebuildTree(root: $0, removing: removedIDs)
+            }
+            return DeleteOperationOutcome(response: response, rebuiltTree: rebuilt)
+        }.value
+
+        guard currentJob?.id == job.id else { return outcome.response }
+        if let rebuilt = outcome.rebuiltTree {
+            job.rootNode = rebuilt.root
+            job.nodeIndex = rebuilt.index
+            job.treeRevision += 1
+        }
+
+        selectedNodeIDs = Set(outcome.response.failed.map(\.nodeID))
+            .intersection(job.nodeIndex.keys)
         if job.nodeIndex[currentZoomNodeID] == nil {
             currentZoomNodeID = job.rootNode?.id ?? "root"
         }
-        job.treeRevision += 1
+
+        return outcome.response
     }
 
-    /// Re-runs the current scan against the same path.
     func rescan() {
-        guard let job = currentJob else { return }
+        guard canRescan, let job = currentJob else { return }
         startScan(rootPath: job.rootPath, includeHidden: job.includeHidden)
     }
 
-    // MARK: - Private
-
     private func applyProgress(scanID: String, event: ProgressEvent) {
-        guard let job = jobs.first(where: { $0.id == scanID }) else { return }
+        guard event.scanID == scanID,
+              let job = jobs.first(where: { $0.id == scanID }),
+              job.status == .running else { return }
         job.directoriesVisited = event.directoriesVisited
         job.filesVisited = event.filesVisited
         job.bytesSeen = event.bytesSeen
@@ -148,20 +221,22 @@ class ScanManager {
         job.currentPath = event.currentPath ?? job.currentPath
     }
 
-    private func finalizeScan(id: String, root: Node?, index: [String: Node]?, warnings: [ScanWarning]?, status: ScanStatus) {
-        guard let job = jobs.first(where: { $0.id == id }) else { return }
-        if let root = root {
-            job.rootNode = root
-        }
-        if let index = index {
-            job.nodeIndex = index
-        }
-        if let warnings = warnings {
-            job.warnings = warnings
-        }
-        job.status = status
+    private func finalizeScan(
+        id: String,
+        root: Node?,
+        index: [String: Node]?,
+        warnings: [ScanWarning]?,
+        status: ScanStatus
+    ) {
         activeTasks.removeValue(forKey: id)
-        if status == .complete, let root = root {
+        guard let job = jobs.first(where: { $0.id == id }) else { return }
+
+        if let root { job.rootNode = root }
+        if let index { job.nodeIndex = index }
+        if let warnings { job.warnings = warnings }
+        job.status = status
+
+        if currentJob?.id == id, status == .complete, let root {
             currentZoomNodeID = root.id
         }
     }

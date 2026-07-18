@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class DeleteServiceTests: XCTestCase {
+    private func service() -> DeleteService {
+        DeleteService(moveItemToTrash: { url in
+            try FileManager.default.removeItem(at: url)
+        })
+    }
+
+    private func identity(of url: URL) -> FileIdentity {
+        FileSystemEntry.read(atPath: url.path)!.identity
+    }
+
     private func homeTempDir() throws -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".leafblower-\(UUID().uuidString)")
@@ -21,16 +31,17 @@ final class DeleteServiceTests: XCTestCase {
         try! "hi there".write(to: fileB, atomically: true, encoding: .utf8)
         try! "hey".write(to: topFile, atomically: true, encoding: .utf8)
 
-        let nodeFileA = Node(id: "file_a", name: "file_a.txt", path: fileA.path, parentID: "subdir", sizeBytes: 5, isDir: false)
-        let nodeFileB = Node(id: "file_b", name: "file_b.txt", path: fileB.path, parentID: "subdir", sizeBytes: 8, isDir: false)
-        let nodeSubdir = Node(id: "subdir", name: "subdir", path: subdir.path, parentID: "root", sizeBytes: 13, isDir: true, childCount: 2, hasChildren: true, children: [nodeFileA, nodeFileB])
-        let nodeTopFile = Node(id: "top_file", name: "top_file.txt", path: topFile.path, parentID: "root", sizeBytes: 3, isDir: false)
-        let nodeRoot = Node(id: "root", name: "root", path: root.path, sizeBytes: 16, isDir: true, childCount: 2, hasChildren: true, children: [nodeSubdir, nodeTopFile])
+        let nodeFileA = Node(id: "file_a", name: "file_a.txt", path: fileA.path, parentID: "subdir", sizeBytes: 5, isDir: false, fileIdentity: identity(of: fileA))
+        let nodeFileB = Node(id: "file_b", name: "file_b.txt", path: fileB.path, parentID: "subdir", sizeBytes: 8, isDir: false, fileIdentity: identity(of: fileB))
+        let nodeSubdir = Node(id: "subdir", name: "subdir", path: subdir.path, parentID: "root", sizeBytes: 13, isDir: true, childCount: 2, hasChildren: true, children: [nodeFileA, nodeFileB], fileIdentity: identity(of: subdir))
+        let nodeTopFile = Node(id: "top_file", name: "top_file.txt", path: topFile.path, parentID: "root", sizeBytes: 3, isDir: false, fileIdentity: identity(of: topFile))
+        let nodeRoot = Node(id: "root", name: "root", path: root.path, sizeBytes: 16, isDir: true, childCount: 2, hasChildren: true, children: [nodeSubdir, nodeTopFile], fileIdentity: identity(of: root))
 
         return ScanJob(
             id: "test_scan",
             rootPath: root.path,
             status: .complete,
+            rootNode: nodeRoot,
             nodeIndex: [
                 "root": nodeRoot,
                 "subdir": nodeSubdir,
@@ -42,9 +53,9 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testRejectsScanRoot() throws {
-        _ = try DeleteService()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let job = ScanJob(
             id: "test",
             rootPath: root.path,
@@ -53,42 +64,64 @@ final class DeleteServiceTests: XCTestCase {
                 "root": Node(id: "root", name: "test", path: root.path, sizeBytes: 0, isDir: true)
             ]
         )
-        let svc = try DeleteService()
+        let svc = service()
         let resp = svc.execute(job: job, nodeIDs: ["root"])
         XCTAssertEqual(resp.failed.count, 1)
-        XCTAssertEqual(resp.failed.first?.error, "cannot delete scan root")
+        XCTAssertEqual(resp.failed.first?.error, "cannot move scan root")
     }
 
     func testRejectsNonexistentNode() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let job = ScanJob(
             id: "test",
             rootPath: root.path,
             status: .complete,
             nodeIndex: [:]
         )
-        let svc = try DeleteService()
+        let svc = service()
         let resp = svc.execute(job: job, nodeIDs: ["fake_node"])
         XCTAssertEqual(resp.failed.count, 1)
         XCTAssertEqual(resp.failed.first?.error, "node not found in scan")
     }
 
     func testDeletesFileSuccessfully() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
         let file = root.appendingPathComponent("test.txt")
         try "test".write(to: file, atomically: true, encoding: .utf8)
 
+        let fileNode = Node(
+            id: "file1",
+            name: "test.txt",
+            path: file.path,
+            parentID: "root",
+            sizeBytes: 0,
+            isDir: false,
+            fileIdentity: identity(of: file)
+        )
+        let rootNode = Node(
+            id: "root",
+            name: "root",
+            path: root.path,
+            sizeBytes: 0,
+            isDir: true,
+            childCount: 1,
+            hasChildren: true,
+            children: [fileNode],
+            fileIdentity: identity(of: root)
+        )
         let job = ScanJob(
             id: "test",
             rootPath: root.path,
             status: .complete,
+            rootNode: rootNode,
             nodeIndex: [
-                "root": Node(id: "root", name: "root", path: root.path, sizeBytes: 0, isDir: true),
-                "file1": Node(id: "file1", name: "test.txt", path: file.path, sizeBytes: 0, isDir: false)
+                "root": rootNode,
+                "file1": fileNode
             ]
         )
 
@@ -98,7 +131,7 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testNormalizesNestedSelections() throws {
-        let svc = try DeleteService()
+        let svc = service()
         let parent = Node(id: "dir", name: "dir", path: "/Users/test/parent", sizeBytes: 0, isDir: true)
         let child = Node(id: "file", name: "file", path: "/Users/test/parent/child.txt", parentID: "dir", sizeBytes: 0, isDir: false)
 
@@ -118,14 +151,14 @@ final class DeleteServiceTests: XCTestCase {
             ]
         )
 
-        let svc = try DeleteService()
+        let svc = service()
         let resp = svc.execute(job: job, nodeIDs: ["file1"])
         XCTAssertEqual(resp.failed.count, 1)
-        XCTAssertEqual(resp.failed.first?.error, "deletion restricted to home directory in v1")
+        XCTAssertEqual(resp.failed.first?.error, "removal is restricted to the home directory in v1")
     }
 
     func testDeletesDirectoryRecursively() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -144,7 +177,7 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testDeletesMultipleFiles() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -164,7 +197,7 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testParentChildBothSelectedOnlyDeletesParentOnce() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -179,7 +212,7 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testPruneNodePropagatesSizeToRoot() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -192,7 +225,7 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testPruneNodeRemovesChildFromParentSlice() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -207,7 +240,7 @@ final class DeleteServiceTests: XCTestCase {
     }
 
     func testRejectsIncompleteJob() async throws {
-        let svc = try DeleteService()
+        let svc = service()
         let root = try homeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -219,6 +252,74 @@ final class DeleteServiceTests: XCTestCase {
         for f in resp.failed {
             XCTAssertEqual(f.error, "scan is not complete")
         }
+    }
+
+    func testRejectsDirectoryThatWasNotFullyScanned() throws {
+        let root = try homeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let job = buildDemoTree(root: root)
+        job.nodeIndex["subdir"]?.isScanComplete = false
+
+        let response = service().execute(job: job, nodeIDs: ["subdir"])
+
+        XCTAssertEqual(response.failed.count, 1)
+        XCTAssertTrue(response.failed[0].error?.contains("not fully scanned") == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("subdir").path))
+    }
+
+    func testRejectsItemChangedAfterScan() throws {
+        let root = try homeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let job = buildDemoTree(root: root)
+        let file = root.appendingPathComponent("top_file.txt")
+        try "changed after scanning".write(to: file, atomically: true, encoding: .utf8)
+
+        let response = service().execute(job: job, nodeIDs: ["top_file"])
+
+        XCTAssertEqual(response.failed.count, 1)
+        XCTAssertTrue(response.failed[0].error?.contains("changed") == true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testRejectsMountedVolumeRoot() throws {
+        let root = try homeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mount = root.appendingPathComponent("mounted")
+        try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
+
+        let mountNode = Node(
+            id: "mount",
+            name: "mounted",
+            path: mount.path,
+            parentID: "root",
+            sizeBytes: 0,
+            isDir: true,
+            isMountPoint: true,
+            fileIdentity: identity(of: mount)
+        )
+        let rootNode = Node(
+            id: "root",
+            name: "root",
+            path: root.path,
+            sizeBytes: 0,
+            isDir: true,
+            childCount: 1,
+            hasChildren: true,
+            children: [mountNode],
+            fileIdentity: identity(of: root)
+        )
+        let job = ScanJob(
+            id: "mount-test",
+            rootPath: root.path,
+            status: .complete,
+            rootNode: rootNode,
+            nodeIndex: ["root": rootNode, "mount": mountNode]
+        )
+
+        let response = service().execute(job: job, nodeIDs: ["mount"])
+
+        XCTAssertEqual(response.failed.first?.error, "mounted volume roots cannot be moved")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mount.path))
     }
 
     func testRejectsCriticalSystemPaths() {

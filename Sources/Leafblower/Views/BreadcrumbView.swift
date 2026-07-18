@@ -1,8 +1,10 @@
 import SwiftUI
 
 struct BreadcrumbView: View {
+    @Environment(ScanManager.self) private var scanManager
+
     var body: some View {
-        if let job = ScanManager.shared.currentJob {
+        if let job = scanManager.currentJob {
             let components = buildBreadcrumb(job: job)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
@@ -15,7 +17,7 @@ struct BreadcrumbView: View {
                         let isLast = i == components.count - 1
 
                         Button(component.name) {
-                            ScanManager.shared.zoomInto(nodeID: component.id)
+                            scanManager.zoomInto(nodeID: component.id)
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(isLast ? Color.primary : Color.accentColor)
@@ -36,7 +38,7 @@ struct BreadcrumbView: View {
 
     private func buildBreadcrumb(job: ScanJob) -> [(id: String, name: String)] {
         var components: [(id: String, name: String)] = []
-        var currentID: String? = ScanManager.shared.currentZoomNodeID
+        var currentID: String? = scanManager.currentZoomNodeID
 
         while let id = currentID, let node = job.nodeIndex[id] {
             components.insert((id: node.id, name: node.name), at: 0)
