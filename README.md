@@ -4,6 +4,8 @@
 
 A fast, native disk space visualizer and cleaner for macOS. Scan any directory, explore your filesystem as an interactive treemap, and move what you don't need to Trash — all in a native SwiftUI application.
 
+<img width="1810" height="1162" alt="CleanShot 2026-07-18 at 15 45 02" src="https://github.com/user-attachments/assets/aa34ab28-d2b4-49f6-836c-90e37d6f4236" />
+
 ## What it does
 
 - **Scans** any path (`~`, `/`, a project folder) and builds a complete size map
