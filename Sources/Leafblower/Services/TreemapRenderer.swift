@@ -31,12 +31,19 @@ enum TreemapRenderer {
 
     /// Computes the layout and renders it to a bitmap. Safe to call off the main
     /// thread (pure CoreGraphics, no AppKit view drawing).
-    static func render(node: Node, size: CGSize, scale: CGFloat, key: String) -> RenderedTreemap {
+    static func render(node: Node, size: CGSize, scale: CGFloat, key: String) -> RenderedTreemap? {
+        guard !Task.isCancelled,
+              size.width.isFinite,
+              size.height.isFinite,
+              size.width > 0,
+              size.height > 0 else { return nil }
+
         let layout = TreemapLayoutEngine().compute(
             node: node,
             in: CGRect(origin: .zero, size: size)
         )
-        let image = drawImage(layout: layout, size: size, scale: scale)
+        guard !Task.isCancelled,
+              let image = drawImage(layout: layout, size: size, scale: scale) else { return nil }
 
         var rectByID: [String: CGRect] = [:]
         rectByID.reserveCapacity(layout.tiles.count + layout.folderRects.count)
@@ -51,9 +58,13 @@ enum TreemapRenderer {
                                rectByID: rectByID, labelTiles: labelTiles)
     }
 
-    private static func drawImage(layout: TreemapLayout, size: CGSize, scale: CGFloat) -> NSImage {
-        let pxW = max(1, Int((size.width * scale).rounded()))
-        let pxH = max(1, Int((size.height * scale).rounded()))
+    private static func drawImage(layout: TreemapLayout, size: CGSize, scale: CGFloat) -> NSImage? {
+        let requestedScale = min(4, max(1, scale))
+        let pointArea = max(1, size.width * size.height)
+        let maxPixelCount: CGFloat = 32_000_000
+        let renderScale = min(requestedScale, sqrt(maxPixelCount / pointArea))
+        let pxW = max(1, Int((size.width * renderScale).rounded()))
+        let pxH = max(1, Int((size.height * renderScale).rounded()))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
 
         guard let ctx = CGContext(
@@ -65,12 +76,12 @@ enum TreemapRenderer {
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
-            return NSImage(size: size)
+            return nil
         }
 
         // Work in top-left origin point-space (flip the y axis), scaled for retina.
         ctx.translateBy(x: 0, y: CGFloat(pxH))
-        ctx.scaleBy(x: scale, y: -scale)
+        ctx.scaleBy(x: renderScale, y: -renderScale)
 
         ctx.setShouldAntialias(true)
 
@@ -93,11 +104,13 @@ enum TreemapRenderer {
 
         // Folder backgrounds first, so each group's header strip and the gaps
         // between its children show the folder's color (a card behind the contents).
-        for folder in layout.folderRects {
+        for (index, folder) in layout.folderRects.enumerated() {
+            if index.isMultiple(of: 256), Task.isCancelled { return nil }
             fillRounded(folder.rect, cg(folder.color), radius: folderRadius)
         }
 
-        for tile in layout.tiles {
+        for (index, tile) in layout.tiles.enumerated() {
+            if index.isMultiple(of: 256), Task.isCancelled { return nil }
             fillRounded(tile.rect, cg(tile.color), radius: tileRadius)
         }
 
@@ -105,14 +118,15 @@ enum TreemapRenderer {
         let folderStroke = CGColor(red: 0, green: 0, blue: 0, alpha: 0.35)
         ctx.setStrokeColor(folderStroke)
         ctx.setLineWidth(1)
-        for folder in layout.folderRects {
+        for (index, folder) in layout.folderRects.enumerated() {
+            if index.isMultiple(of: 256), Task.isCancelled { return nil }
             let inset = folder.rect.insetBy(dx: 0.5, dy: 0.5)
             let r = min(folderRadius, min(inset.width, inset.height) / 2)
             ctx.addPath(CGPath(roundedRect: inset, cornerWidth: r, cornerHeight: r, transform: nil))
             ctx.strokePath()
         }
 
-        guard let cgImage = ctx.makeImage() else { return NSImage(size: size) }
+        guard !Task.isCancelled, let cgImage = ctx.makeImage() else { return nil }
         return NSImage(cgImage: cgImage, size: size)
     }
 }

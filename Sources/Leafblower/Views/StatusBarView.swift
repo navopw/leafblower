@@ -2,6 +2,9 @@ import SwiftUI
 
 /// Persistent bottom bar showing scan progress, results, or an idle hint.
 struct StatusBarView: View {
+    @Environment(ScanManager.self) private var scanManager
+    @State private var showWarnings = false
+
     var body: some View {
         HStack(spacing: 12) {
             content
@@ -14,9 +17,14 @@ struct StatusBarView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let job = ScanManager.shared.currentJob {
+        if scanManager.isDeleting {
+            ProgressView()
+                .controlSize(.small)
+            Text("Moving selection to Trash...")
+                .font(.callout.weight(.medium))
+        } else if let job = scanManager.currentJob {
             switch job.status {
-            case .queued, .running:
+            case .queued, .running, .cancelling:
                 scanningView(job)
             case .complete:
                 completeView(job)
@@ -28,7 +36,7 @@ struct StatusBarView: View {
                     .font(.callout)
             }
         } else {
-            Text("Ready — enter a path and click Scan")
+            Text("Ready - enter a path and click Scan")
                 .foregroundStyle(.secondary)
                 .font(.callout)
         }
@@ -41,7 +49,7 @@ struct StatusBarView: View {
         progressBar(job)
             .frame(width: 180)
 
-        Text("Scanning…")
+        Text(job.status == .cancelling ? "Stopping..." : "Scanning...")
             .font(.callout.weight(.medium))
 
         if !job.currentPath.isEmpty {
@@ -57,11 +65,12 @@ struct StatusBarView: View {
         counters(job)
 
         Button {
-            ScanManager.shared.cancelScan(id: job.id)
+            scanManager.cancelScan(id: job.id)
         } label: {
-            Label("Stop", systemImage: "stop.fill")
+            Label(job.status == .cancelling ? "Stopping" : "Stop", systemImage: "stop.fill")
         }
         .controlSize(.small)
+        .disabled(job.status == .cancelling)
     }
 
     @ViewBuilder
@@ -81,10 +90,18 @@ struct StatusBarView: View {
         counters(job)
 
         if !job.warnings.isEmpty {
-            Label("\(job.warnings.count)", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .font(.caption)
-                .help("\(job.warnings.count) path(s) could not be read")
+            Button {
+                showWarnings.toggle()
+            } label: {
+                Label("\(job.warnings.count)", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .help("Show scan warnings")
+            .popover(isPresented: $showWarnings, arrowEdge: .bottom) {
+                warningsPopover(job)
+            }
         }
     }
 
@@ -117,7 +134,7 @@ struct StatusBarView: View {
         HStack(spacing: 10) {
             Label("\(job.directoriesVisited)", systemImage: "folder")
             Label("\(job.filesVisited)", systemImage: "doc")
-            if job.status == .running || job.status == .queued {
+            if job.status == .running || job.status == .queued || job.status == .cancelling {
                 Text(FileSizeFormatter.string(from: job.bytesSeen))
             }
         }
@@ -133,5 +150,31 @@ struct StatusBarView: View {
             return "~" + path.dropFirst(home.count)
         }
         return path
+    }
+
+    private func warningsPopover(_ job: ScanJob) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Scan Warnings")
+                .font(.headline)
+                .padding()
+
+            Divider()
+
+            List(Array(job.warnings.enumerated()), id: \.offset) { item in
+                let warning = item.element
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(warning.code)
+                        .font(.callout)
+                    Text(abbreviate(warning.path))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .help(warning.path)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .frame(width: 440, height: 300)
     }
 }

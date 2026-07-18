@@ -3,8 +3,8 @@ set -euo pipefail
 
 swift build -c release
 
-APP="Leafblower.app"
-rm -rf "$APP"
+readonly APP="Leafblower.app"
+rm -rf -- "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp .build/release/Leafblower "$APP/Contents/MacOS/"
 cp Info.plist "$APP/Contents/"

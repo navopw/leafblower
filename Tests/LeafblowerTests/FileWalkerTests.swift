@@ -37,7 +37,7 @@ final class FileWalkerTests: XCTestCase {
         XCTAssertTrue(warnings.isEmpty)
     }
 
-    func testSkipsSymlinks() async throws {
+    func testIncludesSymlinksWithoutFollowingThem() async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tempDir) }
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -51,6 +51,26 @@ final class FileWalkerTests: XCTestCase {
         let walker = FileWalker(includeHidden: false, onProgress: { _ in })
         let (root, _, _) = try await walker.walk(scanID: "test3", rootPath: tempDir.path)
 
-        XCTAssertEqual(root.children?.count, 1)
+        XCTAssertEqual(root.children?.count, 2)
+        let linkNode = root.children?.first { $0.name == "link" }
+        XCTAssertEqual(linkNode?.isSymbolicLink, true)
+        XCTAssertEqual(linkNode?.isDir, false)
+    }
+
+    func testMarksDirectoryIncompleteWhenHiddenItemsAreExcluded() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        try "hidden".write(
+            to: tempDir.appendingPathComponent(".hidden"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let walker = FileWalker(includeHidden: false, onProgress: { _ in })
+        let (root, _, _) = try await walker.walk(scanID: "hidden", rootPath: tempDir.path)
+
+        XCTAssertFalse(root.isScanComplete)
+        XCTAssertTrue(root.children?.isEmpty == true)
     }
 }

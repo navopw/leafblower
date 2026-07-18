@@ -7,37 +7,61 @@ enum SafetyValidator {
         "/System", "/Library", "/Applications", "/Volumes", "/private"
     ]
 
-    static func validate(path: String, scanRoot: String, homeDir: String?) -> String? {
+    static func validate(
+        path: String,
+        scanRoot: String,
+        homeDir: String?,
+        pathIsSymbolicLink: Bool = false
+    ) -> String? {
+        let expandedPath = PathUtils.expandPath(path)
+        guard (expandedPath as NSString).isAbsolutePath else {
+            return "path is not absolute"
+        }
+
         let cleanPath = PathUtils.cleanPath(path)
-        let cleanRoot = PathUtils.cleanPath(scanRoot)
+        let lexicalRoot = PathUtils.cleanPath(scanRoot)
+        let cleanRoot = PathUtils.canonicalPath(scanRoot)
 
-        let pathPrefix = cleanPath == "/" ? "/" : cleanPath + "/"
-        let rootPrefix = cleanRoot == "/" ? "/" : cleanRoot + "/"
-
-        // Must be under scan root
-        if cleanPath != cleanRoot && !pathPrefix.hasPrefix(rootPrefix) {
+        // Check the recorded path before resolving links, then check the real
+        // location to catch a parent directory replaced by a symbolic link.
+        let isLexicallyContained = PathUtils.isSameOrDescendant(cleanPath, of: lexicalRoot)
+            || PathUtils.isSameOrDescendant(cleanPath, of: cleanRoot)
+        if !isLexicallyContained {
             return "path is outside scan root"
         }
 
-        // Cannot delete the scan root itself
-        if cleanPath == cleanRoot {
-            return "cannot delete scan root"
+        if cleanPath == lexicalRoot || cleanPath == cleanRoot {
+            return "cannot move scan root"
         }
 
-        // Must be under home directory (v1 safety)
+        let effectivePath = pathIsSymbolicLink
+            ? PathUtils.canonicalPathPreservingLastComponent(cleanPath)
+            : PathUtils.canonicalPath(cleanPath)
+        if !PathUtils.isSameOrDescendant(effectivePath, of: cleanRoot) {
+            return "path resolves outside scan root"
+        }
+
         if let home = homeDir {
-            let cleanHome = PathUtils.cleanPath(home)
-            let homePrefix = cleanHome == "/" ? "/" : cleanHome + "/"
-            if cleanPath != cleanHome && !pathPrefix.hasPrefix(homePrefix) {
-                return "deletion restricted to home directory in v1"
+            let cleanHome = PathUtils.canonicalPath(home)
+            if effectivePath == cleanHome {
+                return "cannot move home directory"
+            }
+            if !PathUtils.isSameOrDescendant(effectivePath, of: cleanHome) {
+                return "removal is restricted to the home directory in v1"
+            }
+
+            let trash = (cleanHome as NSString).appendingPathComponent(".Trash")
+            if PathUtils.isSameOrDescendant(effectivePath, of: trash) {
+                return "items already in Trash cannot be removed by Leafblower"
             }
         }
 
-        // Defense-in-depth: never delete critical system directories
         for critical in criticalPaths {
-            let criticalPrefix = critical + "/"
-            if cleanPath == critical || pathPrefix.hasPrefix(criticalPrefix) {
-                return "deletion of critical system path is not allowed"
+            let canonicalCritical = PathUtils.canonicalPath(critical)
+            if effectivePath == canonicalCritical
+                || (canonicalCritical != "/"
+                    && PathUtils.isSameOrDescendant(effectivePath, of: canonicalCritical)) {
+                return "critical system paths cannot be moved"
             }
         }
 

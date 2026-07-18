@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SelectionPanel: View {
+    @Environment(ScanManager.self) private var scanManager
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -17,10 +19,8 @@ struct SelectionPanel: View {
 
             Divider()
 
-            if let job = ScanManager.shared.currentJob {
-                let selected = ScanManager.shared.selectedNodeIDs
-                    .compactMap { job.nodeIndex[$0] }
-                    .sorted { $0.sizeBytes > $1.sizeBytes }
+            if let job = scanManager.currentJob {
+                let selected = scanManager.selectedNodes
 
                 if selected.isEmpty {
                     emptyState
@@ -37,7 +37,7 @@ struct SelectionPanel: View {
         .background(Color(.windowBackgroundColor))
     }
 
-    private var selectionCount: Int { ScanManager.shared.selectedNodeIDs.count }
+    private var selectionCount: Int { scanManager.selectedNodes.count }
 
     private var emptyState: some View {
         VStack(spacing: 8) {
@@ -62,7 +62,7 @@ struct SelectionPanel: View {
     private func list(_ selected: [Node], root: String) -> some View {
         List(selected) { node in
             HStack(spacing: 8) {
-                Image(systemName: node.isDir ? "folder.fill" : "doc.fill")
+                Image(systemName: iconName(for: node))
                     .foregroundStyle(node.isDir ? Color.accentColor : .secondary)
                     .frame(width: 16)
 
@@ -79,13 +79,14 @@ struct SelectionPanel: View {
                     .monospacedDigit()
 
                 Button {
-                    ScanManager.shared.toggleSelection(nodeID: node.id)
+                    scanManager.toggleSelection(nodeID: node.id)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
                 .help("Remove from selection")
+                .accessibilityLabel("Remove \(node.name) from selection")
             }
             .padding(.vertical, 1)
         }
@@ -104,9 +105,30 @@ struct SelectionPanel: View {
             }
             .font(.subheadline)
 
+            if selected.contains(where: { $0.isDir && !$0.isScanComplete }) {
+                Label("A selected folder requires a fresh complete scan. Rescan before moving it.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if selected.contains(where: \.isMountPoint) {
+                Label("Mounted volume roots cannot be moved.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
             DeleteConfirmationView()
                 .frame(maxWidth: .infinity)
         }
         .padding()
+    }
+
+    private func iconName(for node: Node) -> String {
+        if node.isMountPoint { return "externaldrive.fill" }
+        if node.isSymbolicLink { return "link" }
+        return node.isDir ? "folder.fill" : "doc.fill"
     }
 }

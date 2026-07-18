@@ -1,11 +1,11 @@
 import SwiftUI
 
 struct PathBarView: View {
+    @Environment(ScanManager.self) private var scanManager
     @State private var path = "~"
 
     private var isScanning: Bool {
-        let status = ScanManager.shared.currentJob?.status
-        return status == .running || status == .queued
+        scanManager.isScanning
     }
 
     var body: some View {
@@ -26,15 +26,17 @@ struct PathBarView: View {
             }
 
             Button(action: startScan) {
-                Label(isScanning ? "Scanning…" : "Scan", systemImage: "play.fill")
+                let isStopping = scanManager.currentJob?.status == .cancelling
+                Label(isStopping ? "Stopping..." : (isScanning ? "Scanning..." : "Scan"),
+                      systemImage: "play.fill")
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: [])
-            .disabled(isScanning || path.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(!scanManager.canStartScan || path.trimmingCharacters(in: .whitespaces).isEmpty)
 
             Button {
-                if let job = ScanManager.shared.currentJob {
-                    ScanManager.shared.cancelScan(id: job.id)
+                if let job = scanManager.currentJob {
+                    scanManager.cancelScan(id: job.id)
                 }
             } label: {
                 Label("Stop", systemImage: "stop.fill")
@@ -48,6 +50,6 @@ struct PathBarView: View {
         guard !isScanning else { return }
         let trimmed = path.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        ScanManager.shared.startScan(rootPath: trimmed, includeHidden: false)
+        scanManager.startScan(rootPath: trimmed, includeHidden: true)
     }
 }
